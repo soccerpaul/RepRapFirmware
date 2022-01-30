@@ -1,11 +1,10 @@
 /*
+
  * HeightController.h
  *
  *  Created on: 18 Apr 2019
  *      Author: David
- */
 
-// TODO entire file changed by Paul
 
 #ifndef SRC_MOVEMENT_HEIGHTCONTROL_HEIGHTCONTROLLER_H_
 #define SRC_MOVEMENT_HEIGHTCONTROL_HEIGHTCONTROLLER_H_
@@ -28,19 +27,34 @@ public:
 	[[noreturn]] void RunTask() noexcept;
 
 private:
+	void CalcDerivedValues() noexcept;
 
 	static constexpr unsigned int HeightControllerTaskStackWords = 100;
 	static constexpr uint32_t DefaultSampleInterval = 200;
 
 	Task<HeightControllerTaskStackWords> *heightControllerTask;
-	int sensorNumber1;								// which sensor, normally a virtual heater, or -1 if not configured
-	int sensorNumber2;								// which sensor, normally a virtual heater, or -1 if not configured
+	int sensorNumber;								// which sensor, normally a virtual heater, or -1 if not configured
 	uint32_t sampleInterval;						// in milliseconds
 	uint32_t lastWakeTime;
+	float setPoint;									// the sensor output we are aiming for
+	float lastReading;								// the last reading we took from the sensor
+	float pidP;
+	float configuredPidI, configuredPidD;			// the PID parameters
+	float actualPidI, actualPidD;
+	float iAccumulator;								// the integral PID component
+	float zMin, zMax;								// the control limits
 	size_t configuredDrive;							// the axis for which motion following is configured
-	float currentSpeed;
-	float currentPosition;
+	float currentZ;
+	float startSpeed;
+	float maxSpeed;
 	float maxAcceleration;
+	float maxZAdjustmentPerSample;					// how much Z adjustment is possible in one sample period
+
+	bool speedControlMode;							// use M951 for speed control instead of position control
+	float currentSpeed;								// current speed of the axis (used for speed control)
+	float acceleration;
+	float deceleration;
+	float endSpeed;
 
 	enum class PidState : uint8_t
 	{
@@ -55,4 +69,5 @@ private:
 
 #endif
 
-#endif /* SRC_MOVEMENT_HEIGHTCONTROL_HEIGHTCONTROLLER_H_ */
+#endif  SRC_MOVEMENT_HEIGHTCONTROL_HEIGHTCONTROLLER_H_
+*/

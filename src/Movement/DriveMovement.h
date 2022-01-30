@@ -167,7 +167,7 @@ public:
 	bool CalcNextStepTime(const DDA &dda) noexcept SPEED_CRITICAL;
 	bool PrepareCartesianAxis(const DDA& dda, const PrepParams& params) noexcept SPEED_CRITICAL;
 	bool PrepareDeltaAxis(const DDA& dda, const PrepParams& params) noexcept SPEED_CRITICAL;
-	bool PrepareExtruder(const DDA& dda, const PrepParams& params, float& extrusionPending, float speedChange, bool doCompensation) noexcept SPEED_CRITICAL;
+	bool PrepareExtruder(const DDA& dda, const PrepParams& params, float& extrusionPending, float requestedSpeedChange, bool doCompensation) noexcept SPEED_CRITICAL;
 
 #if SUPPORT_REMOTE_COMMANDS
 	bool PrepareRemoteExtruder(const DDA& dda, const PrepParams& params) noexcept;

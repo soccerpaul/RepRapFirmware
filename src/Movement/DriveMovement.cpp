@@ -236,7 +236,7 @@ bool DriveMovement::PrepareDeltaAxis(const DDA& dda, const PrepParams& params) n
 }
 
 // Prepare this DM for an extruder move, returning true if there are steps to do
-bool DriveMovement::PrepareExtruder(const DDA& dda, const PrepParams& params, float& extrusionPending, float speedChange, bool doCompensation) noexcept
+bool DriveMovement::PrepareExtruder(const DDA& dda, const PrepParams& params, float& extrusionPending, float requestedSpeedChange, bool doCompensation) noexcept
 {
 	// Calculate the requested extrusion amount and a few other things
 	float dv = dda.directionVector[drive];
@@ -279,7 +279,7 @@ bool DriveMovement::PrepareExtruder(const DDA& dda, const PrepParams& params, fl
 #ifdef COMPENSATE_SPEED_CHANGES
 		// If there is a speed change at the start of the move, theoretically we should instantly advance or retard the filament by the associated compensation amount.
 		// We can't do that, so increase or decrease the extrusion factor instead, so that at least the extrusion will be correct by the end of the move.
-		const float factor = 1.0 + (speedChange * compensationTime)/dda.totalDistance;
+		const float factor = 1.0 + (requestedSpeedChange * compensationTime)/dda.totalDistance;
 		stepsPerMm *= factor;
 #endif
 		// Calculate the net total extrusion to allow for compensation. It may be negative.
@@ -352,15 +352,15 @@ bool DriveMovement::PrepareExtruder(const DDA& dda, const PrepParams& params, fl
 #endif
 
 		// See whether there is a reverse phase
-		const float compensationSpeedChange = dda.deceleration * compensationTime;
-		const uint32_t stepsBeforeReverse = (compensationSpeedChange > dda.topSpeed)
+		const float compensationrequestedSpeedChange = dda.deceleration * compensationTime;
+		const uint32_t stepsBeforeReverse = (compensationrequestedSpeedChange > dda.topSpeed)
 											? mp.cart.decelStartStep - 1
 #if DM_USE_FPU
 											: (uint32_t)(fTwoDistanceToStopTimesCsquaredDivD/fTwoCsquaredTimesMmPerStepDivD);
 #else
 											: twoDistanceToStopTimesCsquaredDivD/twoCsquaredTimesMmPerStepDivD;
 #endif
-		if (dda.endSpeed < compensationSpeedChange && (int32_t)stepsBeforeReverse > netSteps)
+		if (dda.endSpeed < compensationrequestedSpeedChange && (int32_t)stepsBeforeReverse > netSteps)
 		{
 			reverseStartStep = stepsBeforeReverse + 1;
 			totalSteps = (uint32_t)((int32_t)(2 * stepsBeforeReverse) - netSteps);
@@ -387,7 +387,6 @@ bool DriveMovement::PrepareExtruder(const DDA& dda, const PrepParams& params, fl
 #endif
 		}
 	}
-
 	// Prepare for the first step
 	nextStep = 0;
 	nextStepTime = 0;
@@ -464,15 +463,15 @@ bool DriveMovement::PrepareRemoteExtruder(const DDA& dda, const PrepParams& para
 #endif
 
 		// See whether there is a reverse phase
-		const float compensationSpeedChange = dda.deceleration * compensationTime;
-		const uint32_t stepsBeforeReverse = (compensationSpeedChange > dda.topSpeed)
+		const float compensationrequestedSpeedChange = dda.deceleration * compensationTime;
+		const uint32_t stepsBeforeReverse = (compensationrequestedSpeedChange > dda.topSpeed)
 											? mp.cart.decelStartStep - 1
 #if DM_USE_FPU
 											: fTwoDistanceToStopTimesCsquaredDivD/fTwoCsquaredTimesMmPerStepDivD;
 #else
 											: twoDistanceToStopTimesCsquaredDivD/twoCsquaredTimesMmPerStepDivD;
 #endif
-		if (dda.endSpeed < compensationSpeedChange && (int32_t)stepsBeforeReverse > netSteps)
+		if (dda.endSpeed < compensationrequestedSpeedChange && (int32_t)stepsBeforeReverse > netSteps)
 		{
 			reverseStartStep = stepsBeforeReverse + 1;
 			totalSteps = (uint32_t)((int32_t)(2 * stepsBeforeReverse) - netSteps);

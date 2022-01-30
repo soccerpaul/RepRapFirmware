@@ -5,6 +5,8 @@
  *      Author: David
  */
 
+// TODO entire file changed by Paul
+
 #include "HeightController.h"
 
 #if SUPPORT_ASYNC_MOVES
@@ -18,11 +20,10 @@
 #include <Platform/TaskPriorities.h>
 
 HeightController::HeightController() noexcept
-	: heightControllerTask(nullptr), sensorNumber(-1),
-		sampleInterval(DefaultSampleInterval), setPoint(1.0), pidP(1.0), configuredPidI(0.0), configuredPidD(0.0), iAccumulator(0.0),
-		zMin(5.0), zMax(10.0), state(PidState::stopped)
+: heightControllerTask(nullptr), sensorNumber1(-1), sensorNumber2(-1), sampleInterval(DefaultSampleInterval), configuredDrive(Z_AXIS), currentSpeed(0.0),
+  maxAcceleration(reprap.GetPlatform().Acceleration(configuredDrive)), state(PidState::stopped) // TODO change Z axis default to nothing
 {
-	CalcDerivedValues();
+
 }
 
 extern "C" [[noreturn]] void HeightControllerTaskStart(void *p) noexcept
@@ -31,17 +32,41 @@ extern "C" [[noreturn]] void HeightControllerTaskStart(void *p) noexcept
 }
 
 GCodeResult HeightController::Configure(GCodeBuffer& gb, const StringRef& reply) THROWS(GCodeException)
-{
-	bool seen = false;
-	uint32_t sn;
-	gb.TryGetUIValue('H', sn, seen);
-	if (seen)
+		{
+	// Get first sensor number
+	bool seen1 = false;
+	uint32_t sn1;
+	gb.TryGetUIValue('S', sn1, seen1);
+	if (seen1)
 	{
-		sensorNumber = (int)sn;
+		sensorNumber1 = (int)sn1;
 	}
-	gb.TryGetFValue('P', pidP, seen);
-	gb.TryGetFValue('I', configuredPidI, seen);
-	gb.TryGetFValue('D', configuredPidD, seen);
+
+	// Get second sensor number
+	bool seen2 = false;
+	uint32_t sn2;
+	gb.TryGetUIValue('H', sn2, seen2);
+	if (seen2)
+	{
+		sensorNumber2 = (int)sn2;
+	}
+
+	// Get axis
+	for (size_t axis = 0; axis < reprap.GetGCodes().GetTotalAxes(); ++axis)
+	{
+		const char* axisLetters = reprap.GetGCodes().GetAxisLetters();
+		if (gb.Seen(axisLetters[axis]))
+		{
+			configuredDrive = axis;
+		}
+	}
+
+	if (gb.Seen(extrudeLetter))
+	{
+		configuredDrive = ExtruderToLogicalDrive(gb.GetLimitedUIValue(extrudeLetter, reprap.GetGCodes().GetNumExtruders()));
+	}
+
+	// Get frequency
 	if (gb.Seen('F'))
 	{
 		const float freq = gb.GetFValue();
@@ -51,42 +76,28 @@ GCodeResult HeightController::Configure(GCodeBuffer& gb, const StringRef& reply)
 		}
 	}
 
-	float zLimits[2];
-	bool seenZ = false;
-	if (gb.TryGetFloatArray('Z', 2, zLimits, reply, seenZ, false))
+	if (seen1 && seen2)
 	{
-		return GCodeResult::error;
-	}
-	if (seenZ && zLimits[0] < zLimits[1])
-	{
-		zMin = zLimits[0];
-		zMax = zLimits[1];
-	}
-
-	if (seen || seenZ)
-	{
-		CalcDerivedValues();
-
 		TaskCriticalSectionLocker lock;			// make sure we don't create the task more than once
 
-		if (heightControllerTask == nullptr && sensorNumber >= 0)
+		if (heightControllerTask == nullptr && sensorNumber1 >= 0 && sensorNumber2 >= 0)
 		{
 			state = PidState::stopped;
 			heightControllerTask = new Task<HeightControllerTaskStackWords>;
 			heightControllerTask->Create(HeightControllerTaskStart, "HEIGHT", (void*)this, TaskPriority::HeightFollowingPriority);
 		}
 	}
-	else if (sensorNumber < 0)
+	else if (sensorNumber1 < 0 || sensorNumber2 < 0)
 	{
-		reply.copy("Height controller is not configured");
+		reply.copy("Analog speed controller is not configured");
 	}
 	else
 	{
-		reply.printf("Height controller uses sensor %u, frequency %.1f, P%.1f I%.1f D%.1f, Z%.1f to %.1f",
-						sensorNumber, (double)(1000.0/(float)sampleInterval), (double)pidP, (double)configuredPidI, (double)configuredPidD, (double)zMin, (double)zMax);
+		reply.printf("Analog speed controller uses sensors %u and %u, frequency %.1f", // TODO add configuredDrive
+				sensorNumber1, sensorNumber2, (double)(1000.0/(float)sampleInterval));
 	}
 	return GCodeResult::ok;
-}
+		}
 
 // Start/stop height following
 GCodeResult HeightController::StartHeightFollowing(GCodeBuffer& gb, const StringRef& reply) noexcept
@@ -96,25 +107,10 @@ GCodeResult HeightController::StartHeightFollowing(GCodeBuffer& gb, const String
 		if (gb.GetIValue() == 1)
 		{
 			// Start height following
-			if (sensorNumber < 0 || heightControllerTask == nullptr)
+			if (sensorNumber1 < 0 || sensorNumber2 < 0 || heightControllerTask == nullptr)
 			{
-				reply.copy("Height controller is not configured");
+				reply.copy("Analog speed controller is not configured");
 				return GCodeResult::error;
-			}
-
-			bool dummy;
-			gb.TryGetFValue('S', setPoint, dummy);
-
-			float zLimits[2];
-			bool seenZ = false;
-			if (gb.TryGetFloatArray('Z', 2, zLimits, reply, seenZ, false))
-			{
-				return GCodeResult::error;
-			}
-			if (seenZ && zLimits[0] < zLimits[1])
-			{
-				zMin = zLimits[0];
-				zMax = zLimits[1];
 			}
 
 			if (state == PidState::stopped)
@@ -126,12 +122,13 @@ GCodeResult HeightController::StartHeightFollowing(GCodeBuffer& gb, const String
 		else
 		{
 			// Stop height following
+			currentSpeed = 0;
 			Stop();
 		}
 	}
 	else
 	{
-		reply.printf("Height following mode is %sactive", (state == PidState::stopped) ? "in" : "");
+		reply.printf("Analog speed-following mode is %sactive", (state == PidState::stopped) ? "in" : "");
 	}
 	return GCodeResult::ok;
 }
@@ -156,88 +153,95 @@ void HeightController::Stop() noexcept
 			lastReadingOk = false;
 			float machinePos[MaxAxes];
 			reprap.GetMove().GetCurrentMachinePosition(machinePos, false);
-			currentZ = machinePos[Z_AXIS];
-			iAccumulator = constrain<float>(currentZ, zMin, zMax);
+			currentPosition = machinePos[configuredDrive];
 		}
-		else if (sensorNumber < 0)
+		else if (sensorNumber1 < 0 || sensorNumber2 < 0)
 		{
 			state = PidState::stopped;
 		}
 		else
 		{
-			TemperatureError err;
-			const float sensorVal = reprap.GetHeat().GetSensorTemperature(sensorNumber, err);
-			if (err == TemperatureError::success)
+			TemperatureError err1;
+			const float sensorVal1 = reprap.GetHeat().GetSensorTemperature(sensorNumber1, err1);
+			TemperatureError err2;
+			const float sensorVal2 = reprap.GetHeat().GetSensorTemperature(sensorNumber2, err2);
+			if (err1 == TemperatureError::success && err2 == TemperatureError::success)
 			{
-				AsyncMove * const move = reprap.GetMove().LockAuxMove();
-				if (move != nullptr)
-				{
-					// Calculate the new target Z height using the PID algorithm
-					const float difference = setPoint - sensorVal;
-					iAccumulator = constrain<float>(iAccumulator + difference * actualPidI, zMin, zMax);
-					float newZ = currentZ + pidP * difference + iAccumulator;
-					if (lastReadingOk)
+					AsyncMove * const move = reprap.GetMove().LockAuxMove();
+					if (move != nullptr)
 					{
-						newZ += actualPidD * (lastReading - sensorVal);
+
+						float targetSpeed = min<float>(sensorVal1 * sensorVal2, reprap.GetPlatform().MaxFeedrate(configuredDrive));
+						float finalSpeed = targetSpeed; // Calculations below will adjust this value if it isn't possible to reach the target velocity
+						const float interval = sampleInterval * MillisToSeconds;
+						float adjustment = 0; // Distance to move to reach the final speed at the end of the interval
+						float maxDeceleration = maxAcceleration;
+
+						if (targetSpeed > currentSpeed)
+						{
+							if (targetSpeed > currentSpeed + maxAcceleration * interval) // Acceleration-limited case, can't reach targetSpeed
+							{
+								finalSpeed = currentSpeed + maxAcceleration * interval;
+								adjustment = currentSpeed * interval + 0.5 * maxAcceleration * fsquare(interval);
+							}
+							else // The axis can reach the target speed before the end of the interval
+							{
+								float rampInterval = (finalSpeed - currentSpeed) / maxAcceleration;
+								adjustment = currentSpeed * rampInterval + 0.5 * maxAcceleration * fsquare(rampInterval) + finalSpeed * (interval - rampInterval);
+							}
+						}
+						else if (targetSpeed < currentSpeed)
+						{
+
+							if (targetSpeed < currentSpeed - maxDeceleration * interval) // Deceleration-limited case, can't reach targetVelocity
+							{
+								finalSpeed = currentSpeed - maxDeceleration * interval;
+								adjustment = currentSpeed * interval - 0.5 * maxDeceleration * fsquare(interval);
+							}
+							else // The axis can reach the target speed before the end of the interval, but we don't let it do so. The Duet is designed to have deceleration at the end
+								// of a move, not at the beginning, so this would cause issues. Instead, we reduce the deceleration so it reaches the target speed just in time.
+							{
+
+								maxDeceleration = (currentSpeed - finalSpeed)/interval;
+								adjustment = currentSpeed * interval - 0.5 * maxDeceleration * fsquare(interval);
+								//float rampInterval = (currentSpeed - finalSpeed) / maxAcceleration;
+								//adjustment = currentSpeed * rampInterval - 0.5 * maxAcceleration * fsquare(rampInterval) + finalSpeed * (interval - rampInterval);
+							}
+						}
+						else // Maintain current speed
+						{
+							adjustment = currentSpeed * interval;
+						}
+
+						// TODO missing a bunch of code here (everything related to making sure the buffer isn't too full but motion is fluid)
+
+						currentPosition += adjustment;
+
+						// Schedule an async move for the configured drive
+
+						move->SetDefaults();
+						move->movements[configuredDrive] = adjustment;
+						move->requestedSpeed = finalSpeed;
+						move->acceleration = reprap.GetPlatform().Acceleration(configuredDrive);
+						move->deceleration = maxDeceleration;
+
+						move->startSpeed = currentSpeed;
+						move->endSpeed = finalSpeed;
+						reprap.GetMove().ReleaseAuxMove(true);
+						currentSpeed = finalSpeed;
 					}
 
-
-					// Constrain the target Z height to be within the limits
-					newZ = constrain<float>(newZ, zMin, zMax);
-
-					// Calculate how far we need to move Z and constrain it to the maximum permissible Z movement per sample interval.
-					// During the startup phase, Z may be initial outside the limits, so the resulting Z may be outside the limits too.
-					// Note, if the initial Z is well outside the limits, moving it to be within the limits in several small steps like this is non-optimal.
-					// It is faster to move Z to be within the limits before engaging height following mode.
-					const float adjustment = constrain<float>(newZ - currentZ, -maxZAdjustmentPerSample, maxZAdjustmentPerSample);
-					currentZ += adjustment;
-
-					// Schedule an async move to adjust Z
-					move->SetDefaults();
-					move->movements[Z_AXIS] = adjustment;
-					move->startSpeed = move->endSpeed = startSpeed;
-					move->requestedSpeed = reprap.GetPlatform().MaxFeedrate(Z_AXIS);
-					move->acceleration = move->deceleration = acceleration;
-					reprap.GetMove().ReleaseAuxMove(true);
-				}
-
-				lastReading = sensorVal;
 				lastReadingOk = true;
+
 			}
 			else
 			{
 				lastReadingOk = false;
 			}
+
 			vTaskDelayUntil(&lastWakeTime, sampleInterval);
 		}
 	}
 }
 
-void HeightController::CalcDerivedValues() noexcept
-{
-	actualPidI = configuredPidI * ((float)sampleInterval * MillisToSeconds);
-	actualPidD = configuredPidD * (SecondsToMillis/(float)sampleInterval);
-
-	// Calculate the maximum Z adjustment per sample interval.
-	// We always start and end at half the Z jerk speed so that back-to-back Z movements are always possible.
-	startSpeed = reprap.GetPlatform().GetInstantDv(Z_AXIS) * 0.5;
-	maxSpeed = reprap.GetPlatform().MaxFeedrate(Z_AXIS);
-	acceleration = reprap.GetPlatform().Acceleration(Z_AXIS);
-	const float interval = sampleInterval * MillisToSeconds;
-	if (startSpeed + acceleration * interval * 0.5 < maxSpeed)
-	{
-		// Acceleration limited case
-		// We have s = 2 * ((u * (t/2)) + (0.5 * a *(t/2)^2)) = (u * t) + (0.25 * a * t^2)
-		maxZAdjustmentPerSample = startSpeed * interval + acceleration * fsquare(interval) * 0.25;
-	}
-	else
-	{
-		// Top-speed limited
-		const float accelDecelTime = (maxSpeed - startSpeed)/acceleration;
-		maxZAdjustmentPerSample = interval * maxSpeed - accelDecelTime * (maxSpeed - startSpeed);
-	}
-}
-
 #endif
-
-// End

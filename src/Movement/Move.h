@@ -29,7 +29,7 @@
 #if SAME70
 
 constexpr unsigned int InitialDdaRingLength = 60;
-constexpr unsigned int AuxDdaRingLength = 5;
+constexpr unsigned int AuxDdaRingLength = 3; // 5; TODO Changed by Paul (want async moves to respond faster to on/off commands, no need for a long buffer for speed control)
 const unsigned int InitialNumDms = (InitialDdaRingLength/2 * 4) + AuxDdaRingLength;
 
 #elif SAM4E || SAM4S || SAME5x

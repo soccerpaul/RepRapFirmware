@@ -48,7 +48,7 @@ public:
 	bool InitStandardMove(DDARing& ring, const RawMove &nextMove, bool doMotorMapping) noexcept SPEED_CRITICAL;	// Set up a new move, returning true if it represents real movement
 	bool InitLeadscrewMove(DDARing& ring, float feedrate, const float amounts[MaxDriversPerAxis]) noexcept;		// Set up a leadscrew motor move
 #if SUPPORT_ASYNC_MOVES
-	bool InitAsyncMove(DDARing& ring, const AsyncMove& nextMove) noexcept;			// Set up an async move
+	bool InitAsyncMove(DDARing& ring, const AsyncMove& nextMove) noexcept SPEED_CRITICAL;			// Set up an async move TODO Changed by Paul to be speed critical;
 #endif
 
 	void Start(Platform& p, uint32_t tim) noexcept SPEED_CRITICAL;					// Start executing the DDA, i.e. move the move.
@@ -197,7 +197,7 @@ private:
 	void AdjustAcceleration() noexcept;										// Adjust the acceleration and deceleration to reduce ringing
 
 #if SUPPORT_CAN_EXPANSION
-	int32_t PrepareRemoteExtruder(size_t drive, float& extrusionPending, float speedChange) const noexcept;
+	int32_t PrepareRemoteExtruder(size_t drive, float& extrusionPending, float requestedSpeedChange) const noexcept;
 #endif
 
 	static void DoLookahead(DDARing& ring, DDA *laDDA) noexcept SPEED_CRITICAL;	// Try to smooth out moves in the queue

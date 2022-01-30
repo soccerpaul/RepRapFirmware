@@ -576,6 +576,7 @@ bool DDA::InitLeadscrewMove(DDARing& ring, float feedrate, const float adjustmen
 
 # if SUPPORT_ASYNC_MOVES
 
+// TODO Paul changed the following function
 // Set up an async motor move returning true if the move does anything.
 // All async moves are relative and linear.
 bool DDA::InitAsyncMove(DDARing& ring, const AsyncMove& nextMove) noexcept
@@ -612,11 +613,13 @@ bool DDA::InitAsyncMove(DDARing& ring, const AsyncMove& nextMove) noexcept
 	tool = nullptr;
 	filePos = noFilePosition;
 
-	startSpeed = nextMove.startSpeed;
-	endSpeed = nextMove.endSpeed;
 	requestedSpeed = nextMove.requestedSpeed;
 	acceleration = nextMove.acceleration;
 	deceleration = nextMove.deceleration;
+	startSpeed = nextMove.startSpeed;
+	endSpeed = nextMove.endSpeed;
+
+
 
 #if SUPPORT_LASER || SUPPORT_IOBITS
 	laserPwmOrIoBits.Clear();
@@ -624,6 +627,24 @@ bool DDA::InitAsyncMove(DDARing& ring, const AsyncMove& nextMove) noexcept
 
 	// Currently we normalise the vector sum of all motor movements to unit length.
 	totalDistance = Normalise(directionVector);
+
+	// TODO Paul: lookahead isn't useful, the buffer is very short to stay responsive to signal changes and moves are already designed to lead into one another
+	// 4. Calculate the provisional accelerate and decelerate distances and the top speed
+	/*	endSpeed = 0.0;							// until the next move asks us to adjust it
+
+	if (prev->state == provisional)
+	{
+		// Try to meld this move to the previous move to avoid stop/start
+		// Assuming that this move ends with zero speed, calculate the maximum possible starting speed: u^2 = v^2 - 2as
+		prev->beforePrepare.targetNextSpeed = min<float>(fastSqrtf(deceleration * totalDistance * 2.0), requestedSpeed);
+		DoLookahead(ring, prev);
+		startSpeed = prev->endSpeed;
+	}
+	else
+	{
+		// There is no previous move that we can adjust, so start at zero speed.
+		startSpeed = 0.0;
+	}*/
 
 	RecalculateMove(ring);
 	state = provisional;
@@ -968,69 +989,94 @@ void DDA::RecalculateMove(DDARing& ring) noexcept
 {
 	const float twoA = 2 * acceleration;
 	const float twoD = 2 * deceleration;
-	beforePrepare.accelDistance = (fsquare(requestedSpeed) - fsquare(startSpeed))/twoA;
-	beforePrepare.decelDistance = (fsquare(requestedSpeed) - fsquare(endSpeed))/twoD;
-	if (beforePrepare.accelDistance + beforePrepare.decelDistance < totalDistance)
+
+	if (requestedSpeed == endSpeed) // TODO Paul: In speed control mode endSpeed and requestedSpeed are identical
 	{
-		// This move reaches its top speed
-		topSpeed = requestedSpeed;
+		if (startSpeed == endSpeed) // Constant-speed move
+		{
+			topSpeed = requestedSpeed;
+			beforePrepare.accelDistance = beforePrepare.decelDistance = 0;
+		}
+		else if (startSpeed < endSpeed) // Acceleration move
+		{
+			topSpeed = endSpeed;
+			beforePrepare.accelDistance = min<float>((fsquare(requestedSpeed) - fsquare(startSpeed))/twoA, totalDistance);
+			beforePrepare.decelDistance = 0;
+		}
+		else // Deceleration move
+		{
+			topSpeed = startSpeed;
+			beforePrepare.accelDistance = 0;
+			beforePrepare.decelDistance = min<float>((fsquare(startSpeed) - fsquare(requestedSpeed))/twoD, totalDistance);
+		}
 	}
 	else
 	{
-		// This move has no steady-speed phase, so it's accelerate-decelerate or accelerate-only or decelerate-only move.
-		// If V is the peak speed, then (V^2 - u^2)/2a + (V^2 - v^2)/2d = dist
-		// So V^2(2a + 2d) = 2a.2d.dist + 2a.v^2 + 2d.u^2
-		// So V^2 = (2a.2d.dist + 2a.v^2 + 2d.u^2)/(2a + 2d)
-		const float vsquared = ((twoA * twoD * totalDistance) + (twoA * fsquare(endSpeed)) + twoD * fsquare(startSpeed))/(twoA + twoD);
-		if (vsquared > fsquare(startSpeed) && vsquared > fsquare(endSpeed))
+		beforePrepare.accelDistance = (fsquare(requestedSpeed) - fsquare(startSpeed))/twoA;
+		beforePrepare.decelDistance = (fsquare(requestedSpeed) - fsquare(endSpeed))/twoD;
+		if (beforePrepare.accelDistance + beforePrepare.decelDistance < totalDistance)
 		{
-			// It's an accelerate-decelerate move. Calculate accelerate distance from: V^2 = u^2 + 2as.
-			beforePrepare.accelDistance = (vsquared - fsquare(startSpeed))/twoA;
-			beforePrepare.decelDistance = (vsquared - fsquare(endSpeed))/twoD;
-			topSpeed = fastSqrtf(vsquared);
+			// This move reaches its top speed
+			topSpeed = requestedSpeed;
 		}
 		else
 		{
-			// It's an accelerate-only or decelerate-only move.
-			// Due to rounding errors and babystepping adjustments, we may have to adjust the acceleration or deceleration slightly.
-			if (startSpeed < endSpeed)
+			// This move has no steady-speed phase, so it's accelerate-decelerate or accelerate-only or decelerate-only move.
+			// If V is the peak speed, then (V^2 - u^2)/2a + (V^2 - v^2)/2d = dist
+			// So V^2(2a + 2d) = 2a.2d.dist + 2a.v^2 + 2d.u^2
+			// So V^2 = (2a.2d.dist + 2a.v^2 + 2d.u^2)/(2a + 2d)
+			const float vsquared = ((twoA * twoD * totalDistance) + (twoA * fsquare(endSpeed)) + twoD * fsquare(startSpeed))/(twoA + twoD);
+			if (vsquared > fsquare(startSpeed) && vsquared > fsquare(endSpeed))
 			{
-				beforePrepare.accelDistance = totalDistance;
-				beforePrepare.decelDistance = 0.0;
-				topSpeed = endSpeed;
-				const float newAcceleration = (fsquare(endSpeed) - fsquare(startSpeed))/(2 * totalDistance);
-				if (newAcceleration > 1.02 * acceleration)
-				{
-					// The acceleration increase is greater than we expect from rounding error, so record an error
-					ring.RecordLookaheadError();
-					if (reprap.Debug(moduleMove))
-					{
-						debugPrintf("DDA.cpp(%d) na=%f", __LINE__, (double)newAcceleration);
-						DebugPrint("rm");
-					}
-				}
-				acceleration = newAcceleration;
+				// It's an accelerate-decelerate move. Calculate accelerate distance from: V^2 = u^2 + 2as.
+				beforePrepare.accelDistance = (vsquared - fsquare(startSpeed))/twoA;
+				beforePrepare.decelDistance = (vsquared - fsquare(endSpeed))/twoD;
+				topSpeed = fastSqrtf(vsquared);
 			}
 			else
 			{
-				beforePrepare.accelDistance = 0.0;
-				beforePrepare.decelDistance = totalDistance;
-				topSpeed = startSpeed;
-				const float newDeceleration = (fsquare(startSpeed) - fsquare(endSpeed))/(2 * totalDistance);
-				if (newDeceleration > 1.02 * deceleration)
+				// It's an accelerate-only or decelerate-only move.
+				// Due to rounding errors and babystepping adjustments, we may have to adjust the acceleration or deceleration slightly.
+				if (startSpeed < endSpeed)
 				{
-					// The deceleration increase is greater than we expect from rounding error, so record an error
-					ring.RecordLookaheadError();
-					if (reprap.Debug(moduleMove))
+					beforePrepare.accelDistance = totalDistance;
+					beforePrepare.decelDistance = 0.0;
+					topSpeed = endSpeed;
+					const float newAcceleration = (fsquare(endSpeed) - fsquare(startSpeed))/(2 * totalDistance);
+					if (newAcceleration > 1.02 * acceleration)
 					{
-						debugPrintf("DDA.cpp(%d) nd=%f", __LINE__, (double)newDeceleration);
-						DebugPrint("rm");
+						// The acceleration increase is greater than we expect from rounding error, so record an error
+						ring.RecordLookaheadError();
+						if (reprap.Debug(moduleMove))
+						{
+							debugPrintf("DDA.cpp(%d) na=%f", __LINE__, (double)newAcceleration);
+							DebugPrint("rm");
+						}
 					}
+					acceleration = newAcceleration;
 				}
-				deceleration = newDeceleration;
+				else
+				{
+					beforePrepare.accelDistance = 0.0;
+					beforePrepare.decelDistance = totalDistance;
+					topSpeed = startSpeed;
+					const float newDeceleration = (fsquare(startSpeed) - fsquare(endSpeed))/(2 * totalDistance);
+					if (newDeceleration > 1.02 * deceleration)
+					{
+						// The deceleration increase is greater than we expect from rounding error, so record an error
+						ring.RecordLookaheadError();
+						if (reprap.Debug(moduleMove))
+						{
+							debugPrintf("DDA.cpp(%d) nd=%f", __LINE__, (double)newDeceleration);
+							DebugPrint("rm");
+						}
+					}
+					deceleration = newDeceleration;
+				}
 			}
 		}
 	}
+
 
 	if (flags.canPauseAfter && endSpeed != 0.0)
 	{
@@ -1506,15 +1552,15 @@ void DDA::Prepare(uint8_t simMode, float extrusionPending[]) noexcept
 				{
 					// If there is any extruder jerk in this move, in theory that means we need to instantly extrude or retract some amount of filament.
 					// Pass the speed change to PrepareExtruder
-					float speedChange;
+					float requestedSpeedChange;
 					if (flags.usePressureAdvance)
 					{
 						const float prevEndSpeed = (prev->flags.usePressureAdvance) ? prev->endSpeed * prev->directionVector[drive] : 0.0;
-						speedChange = (startSpeed * directionVector[drive]) - prevEndSpeed;
+						requestedSpeedChange = (startSpeed * directionVector[drive]) - prevEndSpeed;
 					}
 					else
 					{
-						speedChange = 0.0;
+						requestedSpeedChange = 0.0;
 					}
 
 					platform.EnableDrivers(drive);
@@ -1524,7 +1570,7 @@ void DDA::Prepare(uint8_t simMode, float extrusionPending[]) noexcept
 					const DriverId driver = platform.GetExtruderDriver(extruder);
 					if (driver.IsRemote())
 					{
-						const int32_t rawSteps = PrepareRemoteExtruder(drive, extrusionPending[extruder], speedChange);
+						const int32_t rawSteps = PrepareRemoteExtruder(drive, extrusionPending[extruder], requestedSpeedChange);
 						if (rawSteps != 0)
 						{
 							CanMotion::AddMovement(params, driver, rawSteps, flags.usePressureAdvance);
@@ -1534,7 +1580,7 @@ void DDA::Prepare(uint8_t simMode, float extrusionPending[]) noexcept
 #endif
 					{
 						DriveMovement* const pdm = DriveMovement::Allocate(drive, DMState::accel0);
-						const bool stepsToDo = pdm->PrepareExtruder(*this, params, extrusionPending[extruder], speedChange, flags.usePressureAdvance);
+						const bool stepsToDo = pdm->PrepareExtruder(*this, params, extrusionPending[extruder], requestedSpeedChange, flags.usePressureAdvance);
 
 						if (stepsToDo)
 						{
@@ -2219,7 +2265,7 @@ void DDA::LimitSpeedAndAcceleration(float maxSpeed, float maxAcceleration) noexc
 
 // Prepare a remote extruder, returning the number of steps we are going to do before allowing for pressure advance.
 // This replicates some of the functionality that DriveMovement::PrepareExtruder does for local extruder drives.
-int32_t DDA::PrepareRemoteExtruder(size_t drive, float& extrusionPending, float speedChange) const noexcept
+int32_t DDA::PrepareRemoteExtruder(size_t drive, float& extrusionPending, float requestedSpeedChange) const noexcept
 {
 	// Calculate the requested extrusion amount and a few other things
 	float extrusionRequired = totalDistance * directionVector[drive];
