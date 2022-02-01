@@ -37,10 +37,9 @@ private:
 	int sensorNumber2;								// which sensor, normally a virtual heater, or -1 if not configured
 	uint32_t sampleInterval;						// in milliseconds
 	uint32_t lastWakeTime;
-	size_t configuredDrive;							// the axis for which motion following is configured
+	int configuredDrive;							// the axis for which motion following is configured
 	float currentSpeed;
 	float currentPosition;
-	float maxAcceleration;
 
 	enum class PidState : uint8_t
 	{

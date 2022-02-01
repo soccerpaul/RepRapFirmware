@@ -6,6 +6,7 @@
  */
 
 // TODO entire file changed by Paul
+// TODO max frequency is limited to 50 Hz right now, beyond that motion is no longer smooth. It may be because there is essentially no buffer. Would be nice to use higher frequencies
 
 #include "HeightController.h"
 
@@ -13,6 +14,7 @@
 
 #include <Platform/RepRap.h>
 #include <Platform/Platform.h>
+#include <Tools/Tool.h>
 #include <GCodes/GCodeBuffer/GCodeBuffer.h>
 #include <Heating/Heat.h>
 #include <Heating/Sensors/TemperatureSensor.h>
@@ -20,8 +22,7 @@
 #include <Platform/TaskPriorities.h>
 
 HeightController::HeightController() noexcept
-: heightControllerTask(nullptr), sensorNumber1(-1), sensorNumber2(-1), sampleInterval(DefaultSampleInterval), configuredDrive(Z_AXIS), currentSpeed(0.0),
-  maxAcceleration(reprap.GetPlatform().Acceleration(configuredDrive)), state(PidState::stopped) // TODO change Z axis default to nothing
+: heightControllerTask(nullptr), sensorNumber1(-1), sensorNumber2(-1), sampleInterval(DefaultSampleInterval), configuredDrive(-1), currentSpeed(0.0), state(PidState::stopped)
 {
 
 }
@@ -51,7 +52,8 @@ GCodeResult HeightController::Configure(GCodeBuffer& gb, const StringRef& reply)
 		sensorNumber2 = (int)sn2;
 	}
 
-	// Get axis
+	// Speed control can be configured for an axis, an extruder drive or a tool (only works for single-extruder tools, will default to the tool's first extruder)
+	// Get axis if specified
 	for (size_t axis = 0; axis < reprap.GetGCodes().GetTotalAxes(); ++axis)
 	{
 		const char* axisLetters = reprap.GetGCodes().GetAxisLetters();
@@ -61,9 +63,18 @@ GCodeResult HeightController::Configure(GCodeBuffer& gb, const StringRef& reply)
 		}
 	}
 
+	// Get extruder if specified
 	if (gb.Seen(extrudeLetter))
 	{
 		configuredDrive = ExtruderToLogicalDrive(gb.GetLimitedUIValue(extrudeLetter, reprap.GetGCodes().GetNumExtruders()));
+	}
+
+	// Get tool if specified
+	if (gb.Seen('P'))
+	{
+		const unsigned int toolNumber = gb.GetUIValue();
+		auto tool = reprap.GetTool(toolNumber);
+		configuredDrive = ExtruderToLogicalDrive(tool.Ptr()->Drive(0));
 	}
 
 	// Get frequency
@@ -76,25 +87,25 @@ GCodeResult HeightController::Configure(GCodeBuffer& gb, const StringRef& reply)
 		}
 	}
 
-	if (seen1 && seen2)
+	if (seen1 && seen2 && configuredDrive >= 0)
 	{
 		TaskCriticalSectionLocker lock;			// make sure we don't create the task more than once
 
-		if (heightControllerTask == nullptr && sensorNumber1 >= 0 && sensorNumber2 >= 0)
+		if (heightControllerTask == nullptr && sensorNumber1 >= 0 && sensorNumber2 >= 0 && configuredDrive >= 0)
 		{
 			state = PidState::stopped;
 			heightControllerTask = new Task<HeightControllerTaskStackWords>;
 			heightControllerTask->Create(HeightControllerTaskStart, "HEIGHT", (void*)this, TaskPriority::HeightFollowingPriority);
 		}
 	}
-	else if (sensorNumber1 < 0 || sensorNumber2 < 0)
+	else if (sensorNumber1 < 0 || sensorNumber2 < 0 || configuredDrive < 0)
 	{
 		reply.copy("Analog speed controller is not configured");
 	}
 	else
 	{
-		reply.printf("Analog speed controller uses sensors %u and %u, frequency %.1f", // TODO add configuredDrive
-				sensorNumber1, sensorNumber2, (double)(1000.0/(float)sampleInterval));
+		reply.printf("Analog speed controller is configured for drive %u, uses sensors %u and %u, frequency %.1f",
+				configuredDrive, sensorNumber1, sensorNumber2, (double)(1000.0/(float)sampleInterval)); // TODO this could be changed so if it's an extruder drive it says so instead of showing a high drive number
 	}
 	return GCodeResult::ok;
 		}
@@ -175,6 +186,7 @@ void HeightController::Stop() noexcept
 						float finalSpeed = targetSpeed; // Calculations below will adjust this value if it isn't possible to reach the target velocity
 						const float interval = sampleInterval * MillisToSeconds;
 						float adjustment = 0; // Distance to move to reach the final speed at the end of the interval
+						float maxAcceleration = reprap.GetPlatform().Acceleration(configuredDrive);
 						float maxDeceleration = maxAcceleration;
 
 						if (targetSpeed > currentSpeed)
@@ -212,8 +224,6 @@ void HeightController::Stop() noexcept
 						{
 							adjustment = currentSpeed * interval;
 						}
-
-						// TODO missing a bunch of code here (everything related to making sure the buffer isn't too full but motion is fluid)
 
 						currentPosition += adjustment;
 
